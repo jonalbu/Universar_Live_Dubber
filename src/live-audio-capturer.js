@@ -1,8 +1,8 @@
 // Capturador en Tiempo Real Universal:
-// 1. Acumulador de palabras nuevas desde subtÃ­tulos (TextTrack / DOM, incluido Vimeo)
-// 2. Captura de audio del <video> con normalizador Web Audio (solo si el AudioContext estÃ¡ "running")
-// 3. DetecciÃ³n de actividad de voz (VAD) para no gastar cuota en silencios
-// 4. Gemini Live WebSocket con watchdog, keepalive y reconexiÃ³n + respaldo REST por fragmentos
+// 1. Acumulador de palabras nuevas desde subtítulos (TextTrack / DOM, incluido Vimeo)
+// 2. Captura de audio del <video> con normalizador Web Audio (solo si el AudioContext está "running")
+// 3. Detección de actividad de voz (VAD) para no gastar cuota en silencios
+// 4. Gemini Live WebSocket con watchdog, keepalive y reconexión + respaldo REST por fragmentos
 // 5. Avisos visibles cuando no se puede capturar el audio (DRM/CORS) o se agota la cuota (429)
 
 window.YTDubberLiveCapturer = (function () {
@@ -78,7 +78,7 @@ window.YTDubberLiveCapturer = (function () {
     return str
       .replace(/<[^>]+>/g, ' ')
       .replace(/\[.*?\]/g, '')
-      .replace(/â™ª+/g, '')
+      .replace(/♪+/g, '')
       .replace(/\s+/g, ' ')
       .trim();
   }
@@ -101,12 +101,15 @@ window.YTDubberLiveCapturer = (function () {
     const normKnown = knownWords.map(normalizeWord);
     const normIncoming = incomingWords.map(normalizeWord);
 
-    const knownJoined = normKnown.slice(-30).join(' ');
+    const recentKnownJoined = normKnown.slice(-20).join(' ');
     const incomingJoined = normIncoming.join(' ');
-    if (knownJoined.includes(incomingJoined)) return [];
+    if (normIncoming.length >= 2 && recentKnownJoined.includes(incomingJoined)) return [];
 
     const maxOverlap = Math.min(normKnown.length, normIncoming.length);
     for (let k = maxOverlap; k >= 1; k--) {
+      if (k === 1 && normIncoming.length >= 5 && normKnown[normKnown.length - 1].length <= 2) {
+        continue;
+      }
       let match = true;
       for (let j = 0; j < k; j++) {
         if (normKnown[normKnown.length - k + j] !== normIncoming[j]) {
@@ -117,10 +120,19 @@ window.YTDubberLiveCapturer = (function () {
       if (match) return incomingWords.slice(k);
     }
 
-    const lastKnownWord = normKnown[normKnown.length - 1];
-    const lastIdx = normIncoming.lastIndexOf(lastKnownWord);
-    if (lastIdx !== -1 && lastIdx < incomingWords.length - 1) {
-      return incomingWords.slice(lastIdx + 1);
+    if (normKnown.length >= 3 && normIncoming.length >= 4) {
+      const a0 = normKnown[normKnown.length - 3];
+      const a1 = normKnown[normKnown.length - 2];
+      const a2 = normKnown[normKnown.length - 1];
+      for (let idx = normIncoming.length - 4; idx >= 0; idx--) {
+        if (
+          normIncoming[idx] === a0 &&
+          normIncoming[idx + 1] === a1 &&
+          normIncoming[idx + 2] === a2
+        ) {
+          return incomingWords.slice(idx + 3);
+        }
+      }
     }
     return incomingWords;
   }
@@ -144,7 +156,7 @@ window.YTDubberLiveCapturer = (function () {
       payload: { text: phraseToTranslate, targetLang: targetLang.split('-')[0].toLowerCase() }
     });
     if (!isRunning) return;
-    if (res && res.warning) warn(`âš ï¸ ${res.warning}`);
+    if (res && res.warning) warn(`⚠️ ${res.warning}`);
 
     const translated = (res && res.ok && res.translated ? res.translated : phraseToTranslate).trim();
     if (translated) {
@@ -162,12 +174,12 @@ window.YTDubberLiveCapturer = (function () {
     pendingNewWords.push(...newWords);
 
     const lastWord = pendingNewWords[pendingNewWords.length - 1] || '';
-    const endsWithPunct = /[.!?â€¦:;]$/.test(lastWord);
+    const endsWithPunct = /[.!?…:;]$/.test(lastWord);
     const settings = window.YTDubberTTSEngine ? window.YTDubberTTSEngine.getSettings() : {};
     const isGeminiMode = settings.workMode === 'gemini-api' && Boolean(settings.geminiApiKey);
-    const targetWordCount = isGeminiMode ? 14 : 9;
-    const minPunctWords = isGeminiMode ? 7 : 4;
-    const pauseWaitMs = isGeminiMode ? 1050 : 750;
+    const targetWordCount = isGeminiMode ? 10 : 7;
+    const minPunctWords = isGeminiMode ? 5 : 3;
+    const pauseWaitMs = isGeminiMode ? 680 : 450;
 
     if (
       pendingNewWords.length >= targetWordCount ||
@@ -224,17 +236,25 @@ window.YTDubberLiveCapturer = (function () {
 
   function checkDomCaptionsNow() {
     if (!isRunning || !activeVideo || activeVideo.paused) return;
-    const nodes = document.querySelectorAll(DOM_CAPTION_SELECTORS);
+    const nodes = Array.from(document.querySelectorAll(DOM_CAPTION_SELECTORS));
     if (!nodes.length) return;
+
+    const pieces = [];
     for (const node of nodes) {
       if (node.id === 'yt-live-dubber-subtitles') continue;
       if (node.offsetParent === null) continue;
+      // Evitar duplicar texto si un nodo contenedor y su hijo coinciden con el selector
+      if (nodes.some((other) => other !== node && node.contains(other))) continue;
       const txt = (node.innerText || node.textContent || '').trim();
-      if (txt && txt.length >= 2 && txt !== lastDomCaptionText) {
-        lastDomCaptionText = txt;
-        ingestLiveCaptionText(txt);
-        break;
+      if (txt && txt.length >= 2) {
+        pieces.push(txt);
       }
+    }
+
+    const combined = pieces.join(' ').replace(/\s+/g, ' ').trim();
+    if (combined && combined !== lastDomCaptionText) {
+      lastDomCaptionText = combined;
+      ingestLiveCaptionText(combined);
     }
   }
 
@@ -374,7 +394,7 @@ window.YTDubberLiveCapturer = (function () {
     const outLength = Math.max(1, Math.floor(float32Samples.length / ratio));
     const pcm16 = new Int16Array(outLength);
     for (let i = 0; i < outLength; i++) {
-      // Promedio simple de las muestras del intervalo (filtro paso bajo bÃ¡sico antes de diezmar)
+      // Promedio simple de las muestras del intervalo (filtro paso bajo básico antes de diezmar)
       const start = Math.floor(i * ratio);
       const end = Math.min(float32Samples.length, Math.floor((i + 1) * ratio));
       let acc = 0;
@@ -395,8 +415,8 @@ window.YTDubberLiveCapturer = (function () {
   }
 
   /**
-   * Construye el grafo Web Audio (compensaciÃ³n de ducking + VAD + salida PCM para Gemini Live).
-   * Si el navegador mantiene el AudioContext suspendido, el resto del cÃ³digo usa el stream crudo.
+   * Construye el grafo Web Audio (compensación de ducking + VAD + salida PCM para Gemini Live).
+   * Si el navegador mantiene el AudioContext suspendido, el resto del código usa el stream crudo.
    */
   function ensureAudioGraph(rawStream) {
     if (audioCtx) {
@@ -460,9 +480,9 @@ window.YTDubberLiveCapturer = (function () {
     if (!liveWsPendingSince) liveWsPendingSince = Date.now();
     liveWsSentMsSinceOutput += (inData.length / audioCtx.sampleRate) * 1000;
     sendBg({ type: 'GEMINI_LIVE_WS_AUDIO_PCM', payload: { base64Pcm } }).then((res) => {
-      // El service worker pudo reiniciarse y perder la sesiÃ³n: pasar a REST y reconectar
+      // El service worker pudo reiniciarse y perder la sesión: pasar a REST y reconectar
       if (liveWsConnected && res && res.ok === false) {
-        handleLiveWsLost('La sesiÃ³n Gemini Live se perdiÃ³');
+        handleLiveWsLost('La sesión Gemini Live se perdió');
       }
     });
   }
@@ -526,7 +546,7 @@ window.YTDubberLiveCapturer = (function () {
     liveWsFailures++;
     if (liveWsFailures >= 3) {
       liveWsDisabled = true;
-      warn(`âš ï¸ Gemini Live no disponible (${reason}). Usando traducciÃ³n por fragmentos.`);
+      warn(`⚠️ Gemini Live no disponible (${reason}). Usando traducción por fragmentos.`);
     }
   }
 
@@ -550,7 +570,7 @@ window.YTDubberLiveCapturer = (function () {
     }, 2000);
   }
 
-  // Si se enviÃ³ voz suficiente y Gemini Live no devuelve nada, descartar la conexiÃ³n y usar REST
+  // Si se envió voz suficiente y Gemini Live no devuelve nada, descartar la conexión y usar REST
   function checkLiveWsHealth() {
     if (!isRunning || !liveWsConnected || !liveWsPendingSince) return;
     const waited = Date.now() - liveWsPendingSince;
@@ -559,12 +579,12 @@ window.YTDubberLiveCapturer = (function () {
     }
   }
 
-  // Mantiene vivo el service worker y detecta si perdiÃ³ la sesiÃ³n
+  // Mantiene vivo el service worker y detecta si perdió la sesión
   async function keepAliveTick() {
     if (!isRunning) return;
     const res = await sendBg({ type: 'GEMINI_LIVE_WS_PING' });
     if (liveWsConnected && (!res || !res.connected)) {
-      handleLiveWsLost('conexiÃ³n cerrada');
+      handleLiveWsLost('conexión cerrada');
     }
   }
 
@@ -585,9 +605,9 @@ window.YTDubberLiveCapturer = (function () {
     }
 
     if (msg.type === 'GEMINI_LIVE_WS_CLOSED') {
-      const reason = (msg.payload && msg.payload.reason) || 'conexiÃ³n cerrada por el servidor';
+      const reason = (msg.payload && msg.payload.reason) || 'conexión cerrada por el servidor';
       if (liveWsConnected) {
-        // Cierre normal (lÃ­mite de ~10 min / goAway): reconectar sin contar como fallo grave
+        // Cierre normal (límite de ~10 min / goAway): reconectar sin contar como fallo grave
         liveWsConnected = false;
         liveWsPendingSince = 0;
         liveWsSentMsSinceOutput = 0;
@@ -610,15 +630,15 @@ window.YTDubberLiveCapturer = (function () {
     const name = (err && err.name) || '';
     const msg = (err && err.message) || String(err || '');
     if (msg === 'CAPTURE_UNSUPPORTED') {
-      return 'âš ï¸ Este navegador no permite capturar el audio del video.';
+      return '⚠️ Este navegador no permite capturar el audio del video.';
     }
     if (name === 'NotSupportedError' || /encrypted|EME|DRM/i.test(msg)) {
-      return 'âš ï¸ Este video estÃ¡ protegido (DRM) y no deja capturar su audio. Activa los subtÃ­tulos CC del reproductor para doblarlo.';
+      return '⚠️ Este video está protegido (DRM) y no deja capturar su audio. Activa los subtítulos CC del reproductor para doblarlo.';
     }
     if (name === 'SecurityError' || /cross-origin|CORS/i.test(msg)) {
-      return 'âš ï¸ El reproductor bloquea la captura de audio (CORS). Activa los subtÃ­tulos CC del reproductor para doblarlo.';
+      return '⚠️ El reproductor bloquea la captura de audio (CORS). Activa los subtítulos CC del reproductor para doblarlo.';
     }
-    return `âš ï¸ No se pudo capturar el audio del video: ${msg}`;
+    return `⚠️ No se pudo capturar el audio del video: ${msg}`;
   }
 
   function recordSingleChunk() {
@@ -640,7 +660,7 @@ window.YTDubberLiveCapturer = (function () {
     if (!rawStream) {
       if (noAudioTrackAttempts >= 3) {
         showCaptureWarningOnce(
-          'âš ï¸ El video no entrega pista de audio capturable (posible DRM). Activa los subtÃ­tulos CC del reproductor.'
+          '⚠️ El video no entrega pista de audio capturable (posible DRM). Activa los subtítulos CC del reproductor.'
         );
       }
       return;
@@ -648,7 +668,7 @@ window.YTDubberLiveCapturer = (function () {
 
     ensureAudioGraph(rawStream);
     const graphRunning = isAudioGraphRunning();
-    // Si el AudioContext sigue suspendido, grabar el audio crudo (sin compensaciÃ³n) en lugar de silencio
+    // Si el AudioContext sigue suspendido, grabar el audio crudo (sin compensación) en lugar de silencio
     const recStream = graphRunning ? normalizedDest.stream : new MediaStream(rawStream.getAudioTracks());
 
     const mimeType = MediaRecorder.isTypeSupported('audio/webm;codecs=opus')
@@ -688,7 +708,7 @@ window.YTDubberLiveCapturer = (function () {
           silentChunkStreak++;
           if (silentChunkStreak >= 3) {
             showCaptureWarningOnce(
-              'âš ï¸ El audio capturado llega en silencio (posible DRM). Activa los subtÃ­tulos CC del reproductor.'
+              '⚠️ El audio capturado llega en silencio (posible DRM). Activa los subtítulos CC del reproductor.'
             );
           }
           return;
@@ -738,9 +758,9 @@ window.YTDubberLiveCapturer = (function () {
         const errText = (res && res.error) || 'Error desconocido';
         if (/429|cuota|quota|exhausted/i.test(errText)) {
           quotaBackoffUntil = Date.now() + QUOTA_BACKOFF_MS;
-          warn('âš ï¸ Cuota por minuto de Gemini agotada (429). Reintentando en 30 s...');
+          warn('⚠️ Cuota por minuto de Gemini agotada (429). Reintentando en 30 s...');
         } else {
-          warn(`âš ï¸ Gemini API: ${errText}`);
+          warn(`⚠️ Gemini API: ${errText}`);
         }
         return;
       }
@@ -763,13 +783,13 @@ window.YTDubberLiveCapturer = (function () {
     if (settings.workMode !== 'gemini-api') return;
 
     if (!(settings.geminiApiKey || '').trim()) {
-      warn('âš ï¸ Ingresa tu Clave de Gemini API en el popup para usar el Traductor Live.');
+      warn('⚠️ Ingresa tu Clave de Gemini API en el popup para usar el Traductor Live.');
       return;
     }
 
     videoEl.addEventListener('play', onVideoPlayForAudio);
 
-    // Preparar el grafo de audio lo antes posible (mÃ¡s cerca del clic del usuario)
+    // Preparar el grafo de audio lo antes posible (más cerca del clic del usuario)
     try {
       const raw = getRawAudioStream();
       if (raw) ensureAudioGraph(raw);

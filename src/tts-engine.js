@@ -115,13 +115,22 @@ window.YTDubberTTSEngine = (function () {
     }, maxMs);
   }
 
+  function getRemainingWindowForSegment(segment) {
+    const now = videoEl ? videoEl.currentTime : segment.start || 0;
+    const nextSeg = segments.find((s) => typeof s.id === 'number' && s.id > segment.id);
+    const hardEnd = nextSeg
+      ? Math.min(segment.start + segment.duration + 0.35, nextSeg.start)
+      : segment.start + (segment.duration || 3.0);
+    return Math.max(0.75, hardEnd - Math.max(segment.start || 0, now));
+  }
+
   function computeRequiredRatePct(segment, videoPlaybackRate = 1) {
-    const charsPerSecNormal = 16.5;
+    const charsPerSecNormal = 14.0;
     const estimatedDuration = (segment.text || '').length / charsPerSecNormal;
-    const availableDuration = Math.max(1.4, segment.duration || 3.0);
-    const rawRatio = Math.min(1.18, Math.max(1.0, estimatedDuration / availableDuration));
+    const availableDuration = getRemainingWindowForSegment(segment);
+    const rawRatio = Math.min(1.75, Math.max(1.0, estimatedDuration / availableDuration));
     const userSpeed = Number(settings.baseSpeed) || 1.0;
-    const totalMultiplier = Math.min(1.32, rawRatio * userSpeed * videoPlaybackRate);
+    const totalMultiplier = Math.min(2.0, Math.max(0.8, rawRatio * userSpeed * videoPlaybackRate));
     return Math.round((totalMultiplier - 1.0) * 100);
   }
 
@@ -373,7 +382,7 @@ window.YTDubberTTSEngine = (function () {
 
     const playbackRate = videoEl ? videoEl.playbackRate || 1 : 1;
     const ratePct = computeRequiredRatePct(segment, playbackRate);
-    utterance.rate = Math.max(0.9, Math.min(1.3, 1 + ratePct / 100));
+    utterance.rate = Math.max(0.8, Math.min(2.0, 1 + ratePct / 100));
     utterance.volume = Math.max(0, Math.min(1, settings.dubVolume));
 
     const estimatedMs = Math.max(4000, segment.text.length * 95);
@@ -444,10 +453,26 @@ window.YTDubberTTSEngine = (function () {
       currentAudio = audio;
       audio.volume = Math.max(0, Math.min(1, settings.dubVolume));
 
-      // En Gemini TTS aplicamos el multiplicador baseSpeed directamente al elemento <audio>
-      const baseRate = engineUsed === 'gemini' ? Number(settings.baseSpeed) || 1.0 : 1.0;
-      const lag = videoEl.currentTime - segment.start;
-      audio.playbackRate = lag > 0.8 ? Math.min(1.25, baseRate * 1.1) : baseRate;
+      const videoRate = videoEl ? videoEl.playbackRate || 1 : 1;
+      const userSpeed = Number(settings.baseSpeed) || 1.0;
+      const lag = Math.max(0, videoEl.currentTime - segment.start);
+
+      // Velocidad inicial: si es Gemini aplicamos baseSpeed * videoRate; si hay retraso (lag), aceleramos
+      const initialBase = engineUsed === 'gemini' ? userSpeed * videoRate : 1.0;
+      const lagBoost = lag > 0.35 ? Math.min(1.45, 1 + lag * 0.18) : 1.0;
+      audio.playbackRate = Math.min(2.0, Math.max(0.8, initialBase * lagBoost));
+
+      // Ajuste exacto al conocer la duración real del audio sintetizado para encajar antes del siguiente subtítulo
+      audio.onloadedmetadata = () => {
+        if (!videoEl || !Number.isFinite(audio.duration) || audio.duration <= 0) return;
+        const remainingWindow = getRemainingWindowForSegment(segment);
+        const neededRate = (audio.duration / remainingWindow) * 1.04;
+        if (engineUsed === 'gemini') {
+          audio.playbackRate = Math.min(2.0, Math.max(userSpeed * videoRate, neededRate));
+        } else if (neededRate > audio.playbackRate) {
+          audio.playbackRate = Math.min(1.65, neededRate);
+        }
+      };
 
       armWatchdog(15000, () => {
         onFinishSpeakingItem();
@@ -535,8 +560,21 @@ window.YTDubberTTSEngine = (function () {
       audio.volume = Math.max(0, Math.min(1, settings.dubVolume));
 
       const isGemEngine = res.engineUsed === 'gemini';
-      const baseRate = isGemEngine ? Number(settings.baseSpeed) || 1.0 : 1.0;
-      audio.playbackRate = pendingLiveQueue.length > 0 ? Math.min(1.25, baseRate * 1.08) : baseRate;
+      const videoRate = videoEl ? videoEl.playbackRate || 1 : 1;
+      const baseRate = isGemEngine ? (Number(settings.baseSpeed) || 1.0) * videoRate : 1.0;
+      const queueBoost = 1 + Math.min(0.6, pendingLiveQueue.length * 0.15);
+      audio.playbackRate = Math.min(2.0, baseRate * queueBoost);
+
+      audio.onloadedmetadata = () => {
+        if (!Number.isFinite(audio.duration) || audio.duration <= 0) return;
+        const targetDur = Math.max(1.2, durationHint / queueBoost);
+        const needed = (audio.duration / targetDur) * 1.05;
+        if (isGemEngine) {
+          audio.playbackRate = Math.min(2.0, Math.max(audio.playbackRate, needed));
+        } else if (needed > audio.playbackRate) {
+          audio.playbackRate = Math.min(1.65, needed);
+        }
+      };
 
       armWatchdog(15000, () => {
         onFinishSpeakingItem();
@@ -644,7 +682,7 @@ window.YTDubberTTSEngine = (function () {
     triggerLookaheadPrefetch(now);
 
     const currentVisualSeg = segments.find(
-      (s) => now >= s.start - 0.1 && now <= s.start + s.duration
+      (s) => now >= s.start - 0.15 && now <= s.start + s.duration + 0.25
     );
     if (currentVisualSeg && !currentVisualSeg.needsTranslation) {
       emitSubtitle(currentVisualSeg.text);
@@ -654,9 +692,39 @@ window.YTDubberTTSEngine = (function () {
 
     if (isSpeaking || isSynthesizing) return;
 
-    if (currentVisualSeg && currentVisualSeg.id !== lastSpokenSegmentId) {
-      speakSegment(currentVisualSeg);
+    // Buscar el siguiente segmento aún no leído que esté activo o haya empezado hace poco (catch-up sin saltarse frases)
+    const candidateIdx = segments.findIndex(
+      (s) =>
+        s.id > lastSpokenSegmentId &&
+        now >= s.start - 0.18 &&
+        now <= s.start + Math.max(s.duration + 1.1, 2.2)
+    );
+
+    if (candidateIdx === -1) return;
+
+    const segToSpeak = segments[candidateIdx];
+    const nextSeg = segments[candidateIdx + 1];
+
+    // Si hablan muy rápido y el siguiente segmento también está por empezar o ya empezó, unirlos para no perder ninguno
+    if (
+      nextSeg &&
+      !segToSpeak.needsTranslation &&
+      !nextSeg.needsTranslation &&
+      now >= segToSpeak.start + segToSpeak.duration * 0.55 &&
+      nextSeg.start - now <= 0.35 &&
+      segToSpeak.text.length + nextSeg.text.length <= 160
+    ) {
+      const combinedSeg = {
+        ...segToSpeak,
+        id: nextSeg.id,
+        duration: Math.max(1.2, nextSeg.start + nextSeg.duration - segToSpeak.start),
+        text: `${segToSpeak.text} ${nextSeg.text}`.trim()
+      };
+      speakSegment(combinedSeg);
+      return;
     }
+
+    speakSegment(segToSpeak);
   }
 
   function onVideoPause() {

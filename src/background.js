@@ -650,7 +650,7 @@ async function synthesizeEdgeTTS({ text, voice = 'es-ES-AlvaroNeural', ratePct =
     throw new Error('Texto vacío');
   }
 
-  const clampedRate = Math.max(-35, Math.min(60, Math.round(ratePct)));
+  const clampedRate = Math.max(-35, Math.min(100, Math.round(ratePct)));
   const cacheKey = `${voice}|${clampedRate}|${cleanText}`;
   if (ttsAudioCache.has(cacheKey)) {
     return ttsAudioCache.get(cacheKey);

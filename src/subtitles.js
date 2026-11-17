@@ -156,13 +156,14 @@ window.YTDubberSubtitles = (function () {
         const gap = seg.start - buffer.end;
         const combinedDuration = seg.start + seg.duration - buffer.start;
         const combinedLength = buffer.text.length + 1 + seg.text.length;
-        const endsWithSentencePunct = /[.!?…]$/.test(buffer.text);
+        const endsWithSentencePunct = /[.!?…:;]$/.test(buffer.text);
 
+        // Segmentos más cortos y ágiles para videos rápidos (evita bloques largos que retrasan la síntesis)
         if (
-          gap > 1.2 ||
-          (endsWithSentencePunct && combinedDuration > 4.5) ||
-          combinedDuration > 9.5 ||
-          combinedLength > 230
+          gap > 0.65 ||
+          (endsWithSentencePunct && (combinedDuration > 2.2 || buffer.text.length > 45)) ||
+          combinedDuration > 4.8 ||
+          combinedLength > 125
         ) {
           merged.push({
             id: merged.length,
@@ -245,15 +246,15 @@ window.YTDubberSubtitles = (function () {
     if (!Array.isArray(segments) || !segments.length) return;
     const baseLang = (targetLang || 'es').split('-')[0].toLowerCase();
 
-    // Seleccionar hasta 18 segmentos cercanos al tiempo actual que aún tengan needsTranslation = true
+    // Seleccionar hasta 24 segmentos cercanos al tiempo actual que aún tengan needsTranslation = true
     const windowSegments = [];
     for (let i = 0; i < segments.length; i++) {
       const seg = segments[i];
       if (!seg.needsTranslation) continue;
       if (seg.start + seg.duration < currentTime - 3) continue;
-      if (seg.start > currentTime + 90 && windowSegments.length >= 8) break;
+      if (seg.start > currentTime + 115 && windowSegments.length >= 10) break;
       windowSegments.push(seg);
-      if (windowSegments.length >= 18) break;
+      if (windowSegments.length >= 24) break;
     }
 
     if (windowSegments.length === 0 || windowTranslationInFlight) return;
