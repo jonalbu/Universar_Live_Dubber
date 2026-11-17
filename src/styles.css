@@ -1,0 +1,140 @@
+/* Estilos para YouTube y HUD Universal para cualquier <video> de la web */
+
+.yt-dubber-btn {
+  position: relative !important;
+  display: inline-flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  width: 48px !important;
+  height: 100% !important;
+  vertical-align: top !important;
+  cursor: pointer !important;
+  opacity: 0.9;
+  transition: opacity 0.2s ease, transform 0.15s ease;
+}
+
+.yt-dubber-btn:hover {
+  opacity: 1;
+}
+
+.yt-dubber-btn-inner {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  height: 100%;
+  color: #ffffff;
+}
+
+.yt-dubber-badge {
+  position: absolute;
+  bottom: 7px;
+  right: 5px;
+  background: rgba(255, 255, 255, 0.22);
+  color: #ffffff;
+  font-size: 9px;
+  font-weight: 700;
+  font-family: Roboto, Arial, sans-serif;
+  line-height: 1;
+  padding: 2px 3.5px;
+  border-radius: 3px;
+  letter-spacing: 0.3px;
+  pointer-events: none;
+  transition: background 0.2s ease, color 0.2s ease;
+}
+
+.yt-dubber-btn.yt-dubber-active .yt-dubber-btn-inner {
+  color: #3ea6ff;
+}
+
+.yt-dubber-btn.yt-dubber-active .yt-dubber-badge {
+  background: #3ea6ff;
+  color: #0f0f0f;
+}
+
+.yt-dubber-btn.yt-dubber-speaking .yt-dubber-badge {
+  background: #00e676;
+  color: #0f0f0f;
+  box-shadow: 0 0 8px rgba(0, 230, 118, 0.7);
+}
+
+.yt-dubber-btn.yt-dubber-loading .yt-dubber-badge {
+  background: #ffb300;
+  color: #0f0f0f;
+}
+
+/* Oculta visualmente los subtítulos originales en inglés de YouTube cuando el doblaje muestra su propio subtítulo traducido */
+#movie_player.yt-dubber-hide-native-cc .ytp-caption-window-container {
+  opacity: 0.01 !important;
+  pointer-events: none !important;
+}
+
+/* HUD Universal para cualquier <video> fuera del reproductor clásico de YouTube */
+.yt-dubber-universal-hud {
+  position: absolute;
+  pointer-events: none;
+  z-index: 2147483640;
+  overflow: hidden;
+}
+
+.yt-dubber-floating-btn {
+  position: absolute !important;
+  top: 12px !important;
+  right: 12px !important;
+  width: 54px !important;
+  height: 32px !important;
+  border-radius: 16px !important;
+  border: 1px solid rgba(255, 255, 255, 0.24) !important;
+  background: rgba(15, 23, 42, 0.78) !important;
+  backdrop-filter: blur(6px);
+  box-shadow: 0 3px 12px rgba(0, 0, 0, 0.45);
+  pointer-events: auto !important;
+  padding: 0 8px !important;
+  opacity: 0.55;
+  transition: opacity 0.2s ease, transform 0.15s ease, border-color 0.2s ease;
+}
+
+.yt-dubber-universal-hud:hover .yt-dubber-floating-btn,
+.yt-dubber-floating-btn:hover,
+.yt-dubber-floating-btn.yt-dubber-active {
+  opacity: 0.98;
+}
+
+.yt-dubber-floating-btn.yt-dubber-active {
+  border-color: #3ea6ff !important;
+}
+
+.yt-dubber-floating-btn .yt-dubber-btn-inner {
+  gap: 3px;
+}
+
+.yt-dubber-floating-btn .yt-dubber-badge {
+  position: static !important;
+  font-size: 10px;
+  padding: 2px 4px;
+}
+
+/* Subtítulo flotante del doblaje */
+.yt-dubber-subtitle-overlay {
+  position: absolute;
+  bottom: 64px;
+  left: 50%;
+  transform: translateX(-50%);
+  max-width: 82%;
+  background: rgba(12, 14, 18, 0.84);
+  backdrop-filter: blur(6px);
+  color: #ffffff;
+  font-family: 'YouTube Noto', Roboto, 'Segoe UI', Arial, sans-serif;
+  font-size: clamp(14px, 1.8vw, 21px);
+  font-weight: 500;
+  line-height: 1.38;
+  text-align: center;
+  padding: 7px 16px;
+  border-radius: 8px;
+  border: 1px solid rgba(62, 166, 255, 0.35);
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.45);
+  z-index: 65;
+  pointer-events: none;
+  transition: opacity 0.15s ease;
+}

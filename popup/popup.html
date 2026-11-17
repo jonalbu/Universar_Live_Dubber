@@ -1,0 +1,151 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Universal Web & YouTube Live Dubber</title>
+  <link rel="stylesheet" href="popup.css" />
+</head>
+<body>
+  <div class="app-container">
+    <header class="header">
+      <div class="brand">
+        <div class="brand-icon">🎙️</div>
+        <div>
+          <h1>Universal Live Dubber</h1>
+          <p class="subtitle">Traductor de audio para YouTube y toda la Web</p>
+        </div>
+      </div>
+      <button id="toggleDubbingBtn" class="power-btn" type="button">
+        Activar
+      </button>
+    </header>
+
+    <div id="tabStatusBanner" class="status-banner">
+      Abre cualquier video en la web o YouTube y pulsa <strong>Activar</strong> o el botón <strong>DUB</strong>.
+    </div>
+
+    <main class="controls">
+      <!-- Conmutador Principal: Motor TTS vs Clave Gemini API -->
+      <div class="field-group">
+        <label>Modo de Operación</label>
+        <div class="mode-switcher" role="group" aria-label="Seleccionar modo">
+          <button type="button" id="modeTtsOnlyBtn" class="mode-tab active" data-mode="tts-only">
+            🎙️ Motor TTS (Sin API)
+          </button>
+          <button type="button" id="modeGeminiBtn" class="mode-tab" data-mode="gemini-api">
+            ✨ Usar Clave Gemini API
+          </button>
+        </div>
+      </div>
+
+      <div class="field-group">
+        <label for="targetLang">Idioma al que quieres traducir</label>
+        <select id="targetLang">
+          <option value="es">🇪🇸 / 🌎 Español</option>
+          <option value="en">🇺🇸 Inglés (English)</option>
+          <option value="pt">🇧🇷 Portugués (Português)</option>
+          <option value="fr">🇫🇷 Francés (Français)</option>
+          <option value="de">🇩🇪 Alemán (Deutsch)</option>
+          <option value="it">🇮🇹 Italiano (Italiano)</option>
+        </select>
+      </div>
+
+      <!-- SECCIÓN EXCLUSIVA MODO GEMINI API (Oculta los TTS del navegador y usa las voces nativas de Gemini) -->
+      <div id="geminiApiSection" class="mode-section hidden">
+        <div class="field-group">
+          <label for="geminiApiKey">Tu Clave de Gemini API (Google AI Studio)</label>
+          <input
+            type="password"
+            id="geminiApiKey"
+            class="text-input"
+            placeholder="AIzaSy... (Traducción y Voz IA de Gemini)"
+            autocomplete="off"
+          />
+        </div>
+
+        <div class="field-group">
+          <div class="label-row">
+            <label for="geminiVoiceSelect">Voz Nativa de IA de Gemini</label>
+            <button id="testGeminiVoiceBtn" class="test-btn" type="button">🔊 Probar voz Gemini</button>
+          </div>
+          <select id="geminiVoiceSelect">
+            <option value="Kore">🌟 Kore (Femenina - Firme, Clara y Natural)</option>
+            <option value="Puck">⚡ Puck (Masculina - Dinámica y Expresiva)</option>
+            <option value="Aoede">🎵 Aoede (Femenina - Cálida y Fluida)</option>
+            <option value="Charon">🎙️ Charon (Masculina - Profunda e Informativa)</option>
+            <option value="Fenrir">🔥 Fenrir (Masculina - Enérgica y Rápida)</option>
+            <option value="Zephyr">🍃 Zephyr (Femenina - Suave y Brillante)</option>
+            <option value="Leda">✨ Leda (Femenina - Juvenil y Articulada)</option>
+            <option value="Orus">🛡️ Orus (Masculina - Serena y Profesional)</option>
+          </select>
+        </div>
+      </div>
+
+      <!-- SECCIÓN EXCLUSIVA MODO MOTOR TTS DEL NAVEGADOR / EDGE (Se oculta al elegir Gemini API) -->
+      <div id="browserTtsSection" class="mode-section">
+        <div class="field-group">
+          <label for="engineSelect">Motor de Síntesis de Voz (TTS)</label>
+          <select id="engineSelect">
+            <option value="edge-neural">⚡ Microsoft Edge Neural (Ultra Natural en Chrome/Edge)</option>
+            <option value="browser-native">🌐 Web Speech API Nativa del Navegador</option>
+          </select>
+        </div>
+
+        <div class="field-group" id="edgeVoiceGroup">
+          <div class="label-row">
+            <label for="edgeVoiceSelect">Voz Neuronal (Microsoft Natural)</label>
+            <button id="testVoiceBtn" class="test-btn" type="button">🔊 Probar voz</button>
+          </div>
+          <select id="edgeVoiceSelect"></select>
+        </div>
+
+        <div class="field-group hidden" id="nativeVoiceGroup">
+          <div class="label-row">
+            <label for="nativeVoiceSelect">Voz del Navegador</label>
+            <button id="testNativeVoiceBtn" class="test-btn" type="button">🔊 Probar voz</button>
+          </div>
+          <select id="nativeVoiceSelect"></select>
+        </div>
+      </div>
+
+      <div class="sliders-card">
+        <div class="slider-row">
+          <div class="slider-header">
+            <span>Volumen original (mientras habla)</span>
+            <strong id="duckVolumeVal">15%</strong>
+          </div>
+          <input type="range" id="duckVolume" min="0" max="60" step="5" value="15" />
+        </div>
+
+        <div class="slider-row">
+          <div class="slider-header">
+            <span>Volumen de la voz traducida</span>
+            <strong id="dubVolumeVal">100%</strong>
+          </div>
+          <input type="range" id="dubVolume" min="20" max="100" step="5" value="100" />
+        </div>
+
+        <div class="slider-row">
+          <div class="slider-header">
+            <span>Velocidad base de narración</span>
+            <strong id="baseSpeedVal">1.00x</strong>
+          </div>
+          <input type="range" id="baseSpeed" min="0.85" max="1.30" step="0.05" value="1.00" />
+        </div>
+      </div>
+
+      <label class="checkbox-row">
+        <input type="checkbox" id="showSubtitlesOverlay" checked />
+        <span>Mostrar subtítulo traducido flotante sobre el video</span>
+      </label>
+    </main>
+
+    <footer class="footer">
+      <span id="testStatusText">Optimizado para videos cortos y cursos de 30+ horas</span>
+    </footer>
+  </div>
+
+  <script src="popup.js"></script>
+</body>
+</html>

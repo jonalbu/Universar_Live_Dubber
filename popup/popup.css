@@ -1,0 +1,260 @@
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  width: 375px;
+  font-family: 'Segoe UI', Roboto, -apple-system, BlinkMacSystemFont, sans-serif;
+  background: #0f1117;
+  color: #f1f5f9;
+  user-select: none;
+}
+
+.app-container {
+  padding: 14px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 11px;
+}
+
+.header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding-bottom: 10px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.brand-icon {
+  width: 36px;
+  height: 36px;
+  border-radius: 10px;
+  background: linear-gradient(135deg, #2563eb, #06b6d4);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 18px;
+  box-shadow: 0 3px 10px rgba(37, 99, 235, 0.35);
+}
+
+h1 {
+  font-size: 15px;
+  font-weight: 700;
+  color: #ffffff;
+}
+
+.subtitle {
+  font-size: 11px;
+  color: #94a3b8;
+}
+
+.power-btn {
+  padding: 7px 14px;
+  border-radius: 20px;
+  border: none;
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+  background: #2563eb;
+  color: #ffffff;
+  transition: all 0.2s ease;
+}
+
+.power-btn:hover {
+  background: #1d4ed8;
+}
+
+.power-btn.active {
+  background: #10b981;
+  color: #052e16;
+  box-shadow: 0 0 12px rgba(16, 185, 129, 0.45);
+}
+
+.status-banner {
+  background: rgba(30, 41, 59, 0.75);
+  border: 1px solid rgba(148, 163, 184, 0.16);
+  border-radius: 8px;
+  padding: 8px 10px;
+  font-size: 11.5px;
+  line-height: 1.4;
+  color: #cbd5e1;
+}
+
+.status-banner.active {
+  background: rgba(16, 185, 129, 0.14);
+  border-color: rgba(16, 185, 129, 0.4);
+  color: #a7f3d0;
+}
+
+.controls {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.mode-section {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.mode-section.hidden {
+  display: none;
+}
+
+/* Selector conmutador de Modo de Operación */
+.mode-switcher {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px;
+  background: #171b24;
+  padding: 4px;
+  border-radius: 9px;
+  border: 1px solid rgba(148, 163, 184, 0.16);
+}
+
+.mode-tab {
+  border: none;
+  border-radius: 6px;
+  padding: 7px 8px;
+  font-size: 11.5px;
+  font-weight: 600;
+  color: #94a3b8;
+  background: transparent;
+  cursor: pointer;
+  transition: all 0.18s ease;
+}
+
+.mode-tab:hover {
+  color: #e2e8f0;
+}
+
+.mode-tab.active {
+  background: linear-gradient(135deg, #2563eb, #0284c7);
+  color: #ffffff;
+  box-shadow: 0 2px 8px rgba(37, 99, 235, 0.35);
+}
+
+.field-group {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.field-group.hidden {
+  display: none;
+}
+
+.label-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+label {
+  font-size: 11.5px;
+  font-weight: 600;
+  color: #94a3b8;
+}
+
+select,
+.text-input {
+  width: 100%;
+  padding: 7px 10px;
+  border-radius: 7px;
+  border: 1px solid rgba(148, 163, 184, 0.22);
+  background: #1e2430;
+  color: #f8fafc;
+  font-size: 12.5px;
+  outline: none;
+}
+
+select {
+  cursor: pointer;
+}
+
+select:focus,
+.text-input:focus {
+  border-color: #38bdf8;
+}
+
+.test-btn {
+  background: rgba(56, 189, 248, 0.14);
+  color: #38bdf8;
+  border: 1px solid rgba(56, 189, 248, 0.3);
+  border-radius: 5px;
+  padding: 2px 8px;
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.15s ease;
+}
+
+.test-btn:hover {
+  background: rgba(56, 189, 248, 0.25);
+}
+
+.sliders-card {
+  background: #171b24;
+  border: 1px solid rgba(148, 163, 184, 0.12);
+  border-radius: 9px;
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.slider-row {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.slider-header {
+  display: flex;
+  justify-content: space-between;
+  font-size: 11.5px;
+  color: #cbd5e1;
+}
+
+.slider-header strong {
+  color: #38bdf8;
+}
+
+input[type='range'] {
+  width: 100%;
+  accent-color: #38bdf8;
+  cursor: pointer;
+}
+
+.checkbox-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  color: #cbd5e1;
+  cursor: pointer;
+}
+
+.checkbox-row input {
+  accent-color: #38bdf8;
+  width: 15px;
+  height: 15px;
+  cursor: pointer;
+}
+
+.footer {
+  border-top: 1px solid rgba(255, 255, 255, 0.07);
+  padding-top: 8px;
+  text-align: center;
+  font-size: 11px;
+  color: #64748b;
+}

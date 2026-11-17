@@ -1,0 +1,62 @@
+{
+  "manifest_version": 3,
+  "name": "Universal Web & YouTube Live Dubber - Traductor IA",
+  "version": "2.0.0",
+  "description": "Traduce y dobla al instante cualquier video de la web y YouTube usando Microsoft Edge Neural TTS, subtítulos HTML5/VTT/SRT y captura de audio IA.",
+  "permissions": [
+    "storage",
+    "activeTab",
+    "scripting",
+    "declarativeNetRequest"
+  ],
+  "host_permissions": [
+    "<all_urls>"
+  ],
+  "declarative_net_request": {
+    "rule_resources": [
+      {
+        "id": "edge_tts_headers",
+        "enabled": true,
+        "path": "rules.json"
+      }
+    ]
+  },
+  "background": {
+    "service_worker": "src/background.js"
+  },
+  "action": {
+    "default_popup": "popup/popup.html",
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "48": "icons/icon48.png",
+      "128": "icons/icon128.png"
+    },
+    "default_title": "Universal Live Dubber"
+  },
+  "icons": {
+    "16": "icons/icon16.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  },
+  "content_scripts": [
+    {
+      "matches": ["<all_urls>"],
+      "js": ["src/injected.js"],
+      "world": "MAIN",
+      "run_at": "document_start",
+      "all_frames": true
+    },
+    {
+      "matches": ["<all_urls>"],
+      "js": [
+        "src/subtitles.js",
+        "src/tts-engine.js",
+        "src/live-audio-capturer.js",
+        "src/content.js"
+      ],
+      "css": ["src/styles.css"],
+      "run_at": "document_idle",
+      "all_frames": true
+    }
+  ]
+}
