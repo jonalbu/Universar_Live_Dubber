@@ -416,17 +416,81 @@ function pcmOrWavBase64ToDataUrl(base64Audio, sampleRate = 24000) {
   return `data:audio/wav;base64,${uint8ArrayToBase64(wavBytes)}`;
 }
 
+let lastGeminiRuntimeWarning = '';
+
+function isAuthOrKeyError(status, msg = '') {
+  if (status === 401 || status === 403) return true;
+  if (
+    /API_KEY_INVALID|API key not valid|API key expired|PERMISSION_DENIED|unauthenticated|key.*invalid|blocked/i.test(
+      msg
+    )
+  ) {
+    return true;
+  }
+  return false;
+}
+
+function formatGeminiError(status, msg = '') {
+  if (status === 401 || /API_KEY_INVALID|API key not valid|key.*invalid/i.test(msg)) {
+    return 'Clave de Gemini API inválida. Verifica que comience con AIza... en Google AI Studio.';
+  }
+  if (status === 403 || /PERMISSION_DENIED|blocked|referer/i.test(msg)) {
+    return `Permiso denegado por Gemini API (403): ${msg}. Revisa que la clave no tenga restricciones de sitio web (HTTP Referrer) en Google AI Studio.`;
+  }
+  if (status === 429 || /quota|rate|exhausted|depleted|RESOURCE_EXHAUSTED/i.test(msg)) {
+    return 'Límite por minuto (429) de Gemini Free Tier alcanzado temporalmente.';
+  }
+  return msg || `HTTP ${status}`;
+}
+
+async function validateGeminiApiKey(apiKey) {
+  const cleanKey = (apiKey || '').trim();
+  if (!cleanKey) {
+    throw new Error('Ingresa una Clave de Gemini API.');
+  }
+
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 6000);
+  try {
+    const url = `https://generativelanguage.googleapis.com/v1beta/models?pageSize=5&key=${encodeURIComponent(cleanKey)}`;
+    const res = await fetch(url, {
+      method: 'GET',
+      headers: { 'x-goog-api-key': cleanKey },
+      signal: controller.signal
+    });
+    clearTimeout(timeoutId);
+
+    if (!res.ok) {
+      const errData = await res.json().catch(() => ({}));
+      const rawMsg = errData?.error?.message || `HTTP ${res.status}`;
+      throw new Error(formatGeminiError(res.status, rawMsg));
+    }
+
+    const data = await res.json();
+    const count = Array.isArray(data?.models) ? data.models.length : 0;
+    lastGeminiRuntimeWarning = '';
+    return { valid: true, modelsChecked: count };
+  } catch (err) {
+    clearTimeout(timeoutId);
+    if (err.name === 'AbortError') {
+      throw new Error('Tiempo de espera agotado al verificar la clave con Google AI Studio.');
+    }
+    throw err;
+  }
+}
+
 /**
  * Sintetiza voz directamente usando la API de Gemini TTS con sus voces nativas (Kore, Puck, Aoede, Charon, Fenrir, Zephyr, Leda, Orus).
- * Si el plan gratuito de Gemini alcanza el límite por minuto (429) o tarda más de 4.5s, cae automáticamente a Edge Neural TTS
- * para que la traducción NUNCA se quede muda.
+ * - Si la clave API es inválida (400/401/403) o si strictGeminiOnly=true, lanza el error real para no engañar al usuario.
+ * - Si durante un video alcanza el límite por minuto (429) o timeout, cae automáticamente a Edge Neural TTS e informa warning.
  */
 async function synthesizeGeminiTTS({
   text,
   geminiVoice = 'Kore',
   apiKey = '',
   fallbackEdgeVoice = 'es-ES-AlvaroNeural',
-  ratePct = 0
+  ratePct = 0,
+  strictGeminiOnly = false
 }) {
   const cleanText = (text || '').trim();
   if (!cleanText) {
@@ -442,21 +506,25 @@ async function synthesizeGeminiTTS({
     throw new Error('Ingresa tu Clave de Gemini API en el panel de la extensión.');
   }
 
-  const cacheKey = `gemini|${geminiVoice}|${cleanText}`;
+  const cacheKey = `gemini_v2|${geminiVoice}|${cleanText}`;
   if (ttsAudioCache.has(cacheKey)) {
-    return ttsAudioCache.get(cacheKey);
+    return {
+      audioDataUrl: ttsAudioCache.get(cacheKey),
+      engineUsed: 'gemini',
+      warning: ''
+    };
   }
 
   const ttsModels = [
-    'gemini-2.5-flash-preview-tts',
     'gemini-3.8-flash-lite-tts',
-    'gemini-3.8-flash-tts'
+    'gemini-3.8-flash-tts',
+    'gemini-2.5-flash-preview-tts'
   ];
 
   let lastError = null;
   for (const modelName of ttsModels) {
     const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 5000);
+    const timeoutId = setTimeout(() => controller.abort(), 5500);
 
     try {
       const url = `https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateContent?key=${encodeURIComponent(keyToUse)}`;
@@ -465,7 +533,7 @@ async function synthesizeGeminiTTS({
           {
             parts: [
               {
-                text: `Say the following text aloud verbatim without adding any extra words: ${cleanText}`
+                text: cleanText
               }
             ]
           }
@@ -484,7 +552,10 @@ async function synthesizeGeminiTTS({
 
       const res = await fetch(url, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          'x-goog-api-key': keyToUse
+        },
         body: JSON.stringify(body),
         signal: controller.signal
       });
@@ -492,13 +563,17 @@ async function synthesizeGeminiTTS({
 
       if (!res.ok) {
         const errData = await res.json().catch(() => ({}));
-        const msg = errData?.error?.message || `HTTP ${res.status}`;
-        lastError = new Error(msg);
-        if (res.status === 401 || /API key not valid/i.test(msg)) {
+        const rawMsg = errData?.error?.message || `HTTP ${res.status}`;
+        const formattedMsg = formatGeminiError(res.status, rawMsg);
+        lastError = new Error(formattedMsg);
+
+        if (isAuthOrKeyError(res.status, rawMsg)) {
+          lastGeminiRuntimeWarning = formattedMsg;
           throw lastError;
         }
-        // Si es 429 (cuota por minuto de Gemini Free Tier agotada temporalmente), saltar directo al respaldo neuronal sin esperar otros modelos
-        if (res.status === 429 || /quota|rate|exhausted|depleted/i.test(msg)) {
+        // Si es 429 (cuota por minuto de Gemini Free Tier agotada temporalmente), salir del bucle de modelos
+        if (res.status === 429 || /quota|rate|exhausted|depleted|RESOURCE_EXHAUSTED/i.test(rawMsg)) {
+          lastGeminiRuntimeWarning = formattedMsg;
           break;
         }
         continue;
@@ -508,7 +583,7 @@ async function synthesizeGeminiTTS({
       const parts = data?.candidates?.[0]?.content?.parts || [];
       const audioPart = parts.find((p) => p.inlineData && p.inlineData.data);
       if (!audioPart) {
-        lastError = new Error('El modelo de Gemini no devolvió datos de audio.');
+        lastError = new Error(`El modelo ${modelName} no devolvió datos de audio.`);
         continue;
       }
 
@@ -517,23 +592,40 @@ async function synthesizeGeminiTTS({
       const sampleRate = rateMatch ? parseInt(rateMatch[1], 10) : 24000;
       const wavDataUrl = pcmOrWavBase64ToDataUrl(audioPart.inlineData.data, sampleRate);
       setCache(ttsAudioCache, MAX_CACHE_ENTRIES, cacheKey, wavDataUrl);
-      return wavDataUrl;
+      lastGeminiRuntimeWarning = '';
+      return {
+        audioDataUrl: wavDataUrl,
+        engineUsed: 'gemini',
+        modelUsed: modelName,
+        warning: ''
+      };
     } catch (err) {
       clearTimeout(timeoutId);
-      lastError = err;
-      if (/API key not valid/i.test(err.message || '')) {
+      const msg = err.name === 'AbortError' ? `Timeout en ${modelName}` : err.message || '';
+      lastError = new Error(msg);
+      if (isAuthOrKeyError(0, msg) || /Clave de Gemini API|Permiso denegado/i.test(msg)) {
         throw err;
       }
-      break;
+      // Continuar al siguiente modelo si uno dio timeout o error de red puntual
+      continue;
     }
   }
 
-  // Respaldo automático e instantáneo a Microsoft Edge Neural TTS para evitar cualquier silencio cuando la cuota por minuto de Gemini se pausa
-  return synthesizeEdgeTTS({
+  if (strictGeminiOnly) {
+    throw lastError || new Error('No se pudo sintetizar audio con Gemini TTS.');
+  }
+
+  // Respaldo automático e instantáneo a Microsoft Edge Neural TTS para evitar silencio cuando la cuota 429 de Gemini se pausa
+  const fallbackAudioUrl = await synthesizeEdgeTTS({
     text: cleanText,
     voice: fallbackEdgeVoice || 'es-ES-AlvaroNeural',
     ratePct
   });
+  return {
+    audioDataUrl: fallbackAudioUrl,
+    engineUsed: 'edge-fallback',
+    warning: lastError ? lastError.message : 'Respaldo Edge Neural activado temporalmente'
+  };
 }
 
 async function synthesizeFallbackMp3(text, langCode = 'es') {
@@ -724,10 +816,13 @@ async function translateWithGemini(lines, targetLang, apiKey) {
   const targetLangName = langNames[targetLang] || targetLang;
   const numberedInput = lines.map((line, idx) => `[${idx}] ${line}`).join('\n');
 
-  const models = ['gemini-2.5-flash', 'gemini-3.8-flash'];
+  const models = ['gemini-3.8-flash', 'gemini-3.5-flash-lite', 'gemini-2.5-flash'];
   let lastErr = null;
 
   for (const model of models) {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 10000);
+
     try {
       const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${encodeURIComponent(apiKey)}`;
       const body = {
@@ -737,41 +832,88 @@ async function translateWithGemini(lines, targetLang, apiKey) {
               {
                 text:
                   `Translate each numbered line below into natural ${targetLangName} for video dubbing.\n` +
-                  `Keep the exact same [index] prefix on every line, and return ONLY the translated numbered lines:\n\n` +
+                  `Return a JSON array of strings with the exact same number of elements (${lines.length}), preserving the order:\n\n` +
                   numberedInput
               }
             ]
           }
-        ]
+        ],
+        generationConfig: {
+          responseMimeType: 'application/json'
+        }
       };
 
       const res = await fetch(url, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(body)
+        headers: {
+          'Content-Type': 'application/json',
+          'x-goog-api-key': apiKey
+        },
+        body: JSON.stringify(body),
+        signal: controller.signal
       });
+      clearTimeout(timeoutId);
 
       if (!res.ok) {
-        lastErr = new Error(`Gemini API HTTP ${res.status}`);
+        const errData = await res.json().catch(() => ({}));
+        const rawMsg = errData?.error?.message || `HTTP ${res.status}`;
+        const formatted = formatGeminiError(res.status, rawMsg);
+        lastErr = new Error(formatted);
+
+        if (isAuthOrKeyError(res.status, rawMsg)) {
+          lastGeminiRuntimeWarning = formatted;
+          throw lastErr;
+        }
+        if (res.status === 429 || /quota|rate|exhausted|depleted|RESOURCE_EXHAUSTED/i.test(rawMsg)) {
+          // Cada modelo tiene su propia cuota por minuto: probar el siguiente antes de rendirse
+          lastGeminiRuntimeWarning = formatted;
+          continue;
+        }
         continue;
       }
+
       const data = await res.json();
-      const rawOutput = data?.candidates?.[0]?.content?.parts?.[0]?.text || '';
-      const outputLines = rawOutput.split('\n');
+      const rawOutput = (data?.candidates?.[0]?.content?.parts?.[0]?.text || '').trim();
+      if (!rawOutput) {
+        continue;
+      }
+
       const results = [...lines];
 
+      // 1. Intentar parsear como JSON Array o JSON Object
+      try {
+        const parsedJson = JSON.parse(rawOutput);
+        if (Array.isArray(parsedJson) && parsedJson.length > 0) {
+          for (let idx = 0; idx < Math.min(results.length, parsedJson.length); idx++) {
+            const val = String(parsedJson[idx] || '').replace(/^\[\d+\]\s*/, '').trim();
+            if (val) results[idx] = val;
+          }
+          lastGeminiRuntimeWarning = '';
+          return results;
+        }
+      } catch (_) {}
+
+      // 2. Respaldo: parsear formato numerado [idx] (tolerando markdown **[0]** o 0.)
+      const outputLines = rawOutput.split('\n');
       for (const outLine of outputLines) {
-        const match = outLine.trim().match(/^\[(\d+)\]\s*(.+)$/);
+        const match = outLine
+          .trim()
+          .match(/^(?:[*_\s]*\[(\d+)\][*_\s]*|(\d+)[.):\-]\s+)(.+)$/);
         if (match) {
-          const idx = parseInt(match[1], 10);
+          const idx = parseInt(match[1] ?? match[2], 10);
           if (idx >= 0 && idx < results.length) {
-            results[idx] = match[2].trim();
+            results[idx] = match[3].trim();
           }
         }
       }
+      lastGeminiRuntimeWarning = '';
       return results;
     } catch (err) {
+      clearTimeout(timeoutId);
       lastErr = err;
+      if (isAuthOrKeyError(0, err.message || '') || /Clave de Gemini API|Permiso denegado/i.test(err.message || '')) {
+        throw err;
+      }
     }
   }
   throw lastErr || new Error('Error al traducir con Gemini');
@@ -835,7 +977,9 @@ async function translateSingle(text, targetLang = 'es') {
         setCache(singleTranslationCache, MAX_TRANS_CACHE, cacheKey, gemTranslated);
         return gemTranslated;
       }
-    } catch (_) {}
+    } catch (err) {
+      lastGeminiRuntimeWarning = err.message || 'Error en traducción Gemini';
+    }
   }
 
   const translated = (await translateJoinedBlockFree(clean, targetLang)).trim();
@@ -875,7 +1019,9 @@ async function translateBatch(texts, targetLang = 'es') {
         setCache(singleTranslationCache, MAX_TRANS_CACHE, `${targetLang}|${uncachedTexts[j]}`, val);
       }
       return results;
-    } catch (_) {}
+    } catch (err) {
+      lastGeminiRuntimeWarning = err.message || 'Error en traducción por lotes de Gemini';
+    }
   }
 
   const CHUNK_SIZE = 20;
@@ -896,11 +1042,33 @@ async function translateBatch(texts, targetLang = 'es') {
   return results;
 }
 
-async function transcribeAndTranslateAudio({ base64Audio, mimeType = 'audio/webm', targetLang = 'es' }) {
+function cleanSpokenTranslation(rawText) {
+  if (!rawText) return '';
+  const cleaned = String(rawText)
+    .replace(/^["'«»„“”]+|["'«»„“”]+$/g, '')
+    .replace(/\[(?:silence|silencio|music|música|noise|ruido|inaudible|applause|aplausos|empty)\]/gi, '')
+    .replace(/\((?:silence|silencio|music|música|noise|ruido|inaudible|applause|aplausos|empty)\)/gi, '')
+    .trim();
+
+  if (
+    !cleaned ||
+    /^(?:nothing|none|null|n\/a|empty|empty string|silence|silencio|música|music|\.+|-+)$/i.test(cleaned)
+  ) {
+    return '';
+  }
+  return cleaned;
+}
+
+async function transcribeAndTranslateAudio({
+  base64Audio,
+  mimeType = 'audio/webm',
+  targetLang = 'es',
+  previousContext = ''
+}) {
   const settings = await getStoredSettings();
   const apiKey = settings?.geminiApiKey?.trim();
   if (!apiKey) {
-    return '';
+    throw new Error('Ingresa tu Clave de Gemini API para transcribir y traducir audio en vivo.');
   }
 
   const langNames = {
@@ -912,78 +1080,457 @@ async function transcribeAndTranslateAudio({ base64Audio, mimeType = 'audio/webm
     it: 'Italian'
   };
   const targetLangName = langNames[targetLang] || targetLang;
+  const contextHint = previousContext
+    ? `\nPrevious translated sentence (do NOT repeat words already translated here, continue smoothly): "${previousContext}"`
+    : '';
 
-  const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${encodeURIComponent(apiKey)}`;
-  const body = {
-    contents: [
-      {
-        parts: [
+  const models = ['gemini-3.8-flash', 'gemini-3.5-flash-lite', 'gemini-2.5-flash'];
+  let lastError = null;
+
+  for (const model of models) {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 8500);
+
+    try {
+      const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${encodeURIComponent(apiKey)}`;
+      const body = {
+        contents: [
           {
-            inlineData: {
-              mimeType,
-              data: base64Audio
-            }
-          },
-          {
-            text: `Listen to this short audio clip from a video. If there is spoken speech, translate it directly and naturally into ${targetLangName}. Output ONLY the translated spoken words, with no quotes or explanations. If there is only silence, music, or noise, output NOTHING (empty string).`
+            parts: [
+              {
+                inlineData: {
+                  mimeType,
+                  data: base64Audio
+                }
+              },
+              {
+                text:
+                  `Listen to this live audio clip from a video.${contextHint}\n` +
+                  `If there is spoken speech, translate the new speech naturally into ${targetLangName} for live voice dubbing.\n` +
+                  `Return ONLY a JSON object with keys: {"hasSpeech": boolean, "translation": string}.\n` +
+                  `If there is only silence, background music, or noise, return {"hasSpeech": false, "translation": ""}.`
+              }
+            ]
           }
-        ]
+        ],
+        generationConfig: {
+          responseMimeType: 'application/json',
+          maxOutputTokens: 256
+        }
+      };
+
+      const res = await fetch(url, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-goog-api-key': apiKey
+        },
+        body: JSON.stringify(body),
+        signal: controller.signal
+      });
+      clearTimeout(timeoutId);
+
+      if (!res.ok) {
+        const errData = await res.json().catch(() => ({}));
+        const rawMsg = errData?.error?.message || `HTTP ${res.status}`;
+        const formatted = formatGeminiError(res.status, rawMsg);
+        lastError = new Error(formatted);
+
+        if (isAuthOrKeyError(res.status, rawMsg)) {
+          lastGeminiRuntimeWarning = formatted;
+          throw lastError;
+        }
+        if (res.status === 429 || /quota|rate|exhausted|depleted|RESOURCE_EXHAUSTED/i.test(rawMsg)) {
+          // Cada modelo tiene su propia cuota por minuto: probar el siguiente antes de rendirse
+          lastGeminiRuntimeWarning = formatted;
+          continue;
+        }
+        continue;
       }
-    ],
-    generationConfig: {
-      temperature: 0.1,
-      maxOutputTokens: 120
+
+      const data = await res.json();
+      const rawText = (data?.candidates?.[0]?.content?.parts?.[0]?.text || '').trim();
+      if (!rawText) {
+        return { translatedText: '', hasSpeech: false, warning: '' };
+      }
+
+      try {
+        const parsed = JSON.parse(rawText);
+        if (parsed && typeof parsed === 'object') {
+          if (parsed.hasSpeech === false) {
+            return { translatedText: '', hasSpeech: false, warning: '' };
+          }
+          const cleaned = cleanSpokenTranslation(parsed.translation || '');
+          lastGeminiRuntimeWarning = '';
+          return {
+            translatedText: cleaned,
+            hasSpeech: Boolean(cleaned),
+            warning: ''
+          };
+        }
+      } catch (_) {}
+
+      const fallbackCleaned = cleanSpokenTranslation(rawText);
+      lastGeminiRuntimeWarning = '';
+      return {
+        translatedText: fallbackCleaned,
+        hasSpeech: Boolean(fallbackCleaned),
+        warning: ''
+      };
+    } catch (err) {
+      clearTimeout(timeoutId);
+      lastError = err;
+      if (isAuthOrKeyError(0, err.message || '') || /Clave de Gemini API|Permiso denegado/i.test(err.message || '')) {
+        throw err;
+      }
     }
-  };
-
-  const res = await fetch(url, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body)
-  });
-
-  if (!res.ok) {
-    throw new Error(`Gemini API HTTP ${res.status}`);
   }
-  const data = await res.json();
-  const text = data?.candidates?.[0]?.content?.parts?.[0]?.text || '';
-  return text.trim();
+
+  throw lastError || new Error('No se pudo transcribir el audio con Gemini API');
+}
+
+// ============================================================================
+// Gestor de Sesión WebSocket para Gemini Live API (BidiGenerateContent)
+// - Sesiones por pestaña + frame (el video de Vimeo vive en un iframe)
+// - Cierres notificados al frame correcto con motivo (goAway / límite de sesión = cierre esperado)
+// ============================================================================
+const liveWsSessions = new Map(); // "tabId:frameId" -> sesión
+
+function liveSessionKey(tabId, frameId) {
+  return `${tabId}:${frameId || 0}`;
+}
+
+function sendToFrame(tabId, frameId, message) {
+  try {
+    chrome.tabs.sendMessage(tabId, message, { frameId: frameId || 0 }, () => {
+      void chrome.runtime.lastError;
+    });
+  } catch (_) {}
+}
+
+function closeLiveWsSession(key) {
+  const session = liveWsSessions.get(key);
+  if (!session) return;
+  liveWsSessions.delete(key);
+  if (session.flushTimer) clearTimeout(session.flushTimer);
+  try {
+    session.ws.onclose = null;
+    session.ws.onerror = null;
+    session.ws.onmessage = null;
+    session.ws.close();
+  } catch (_) {}
+}
+
+async function startLiveWsSession(tabId, frameId, { targetLang = 'es', geminiVoice = 'Kore' } = {}) {
+  const key = liveSessionKey(tabId, frameId);
+  closeLiveWsSession(key);
+
+  const settings = await getStoredSettings();
+  const apiKey = (settings?.geminiApiKey || '').trim();
+  if (!apiKey) {
+    throw new Error('Falta la Clave de Gemini API');
+  }
+
+  const baseLang = (targetLang || 'es').split('-')[0].toLowerCase();
+  const wsUrl =
+    `wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent` +
+    `?key=${encodeURIComponent(apiKey)}`;
+
+  return new Promise((resolve, reject) => {
+    let ws;
+    try {
+      ws = new WebSocket(wsUrl);
+    } catch (err) {
+      reject(err);
+      return;
+    }
+
+    const session = {
+      ws,
+      ready: false,
+      pcmChunks: [],
+      transcriptBuffer: [],
+      targetLang: baseLang,
+      geminiVoice: geminiVoice || settings.geminiVoice || 'Kore',
+      flushTimer: null,
+      expectedClose: false
+    };
+    liveWsSessions.set(key, session);
+
+    const emitTurnToFrame = () => {
+      if (session.flushTimer) {
+        clearTimeout(session.flushTimer);
+        session.flushTimer = null;
+      }
+      const chunks = session.pcmChunks;
+      const transcript = cleanSpokenTranslation(session.transcriptBuffer.join(' '));
+      session.pcmChunks = [];
+      session.transcriptBuffer = [];
+
+      const totalLen = chunks.reduce((acc, c) => acc + c.length, 0);
+      if (totalLen === 0 && !transcript) return;
+
+      let audioDataUrl = '';
+      if (totalLen > 0) {
+        const combined = new Uint8Array(totalLen);
+        let offset = 0;
+        for (const c of chunks) {
+          combined.set(c, offset);
+          offset += c.length;
+        }
+        audioDataUrl = pcmOrWavBase64ToDataUrl(uint8ArrayToBase64(combined), 24000);
+      }
+
+      sendToFrame(tabId, frameId, {
+        type: 'GEMINI_LIVE_WS_OUTPUT',
+        payload: { audioDataUrl, transcript, voice: session.geminiVoice }
+      });
+    };
+
+    const connectTimeout = setTimeout(() => {
+      if (!session.ready) {
+        closeLiveWsSession(key);
+        reject(new Error('Timeout conectando a Gemini Live'));
+      }
+    }, 6000);
+
+    ws.onopen = () => {
+      ws.send(
+        JSON.stringify({
+          setup: {
+            model: 'models/gemini-3.5-live-translate-preview',
+            generationConfig: {
+              responseModalities: ['AUDIO'],
+              translationConfig: {
+                targetLanguageCode: session.targetLang,
+                echoTargetLanguage: true
+              }
+            },
+            outputAudioTranscription: {}
+          }
+        })
+      );
+    };
+
+    ws.onmessage = async (event) => {
+      try {
+        let rawText = '';
+        if (typeof event.data === 'string') {
+          rawText = event.data;
+        } else if (event.data instanceof Blob) {
+          rawText = await event.data.text();
+        } else if (event.data instanceof ArrayBuffer) {
+          rawText = new TextDecoder().decode(event.data);
+        }
+        if (!rawText) return;
+
+        const msg = JSON.parse(rawText);
+        if (msg.setupComplete !== undefined && !session.ready) {
+          session.ready = true;
+          clearTimeout(connectTimeout);
+          resolve({ ok: true });
+          return;
+        }
+
+        // El servidor avisa que cerrará la conexión (límite de ~10 min): cierre esperado
+        if (msg.goAway) {
+          session.expectedClose = true;
+        }
+
+        const sc = msg.serverContent;
+        if (!sc) return;
+
+        if (sc.outputTranscription?.text) {
+          session.transcriptBuffer.push(sc.outputTranscription.text);
+        }
+        if (sc.modelTurn?.parts) {
+          for (const part of sc.modelTurn.parts) {
+            if (part.inlineData?.data) {
+              session.pcmChunks.push(base64ToUint8Array(part.inlineData.data));
+            }
+          }
+        }
+
+        if (sc.interrupted) {
+          session.pcmChunks = [];
+          session.transcriptBuffer = [];
+        }
+
+        if (sc.turnComplete) {
+          emitTurnToFrame();
+        } else if (session.pcmChunks.length > 0 && !session.flushTimer) {
+          session.flushTimer = setTimeout(emitTurnToFrame, 2600);
+        }
+      } catch (_) {}
+    };
+
+    ws.onerror = () => {
+      clearTimeout(connectTimeout);
+      if (!session.ready) {
+        closeLiveWsSession(key);
+        reject(new Error('No se pudo abrir Gemini Live'));
+      }
+    };
+
+    ws.onclose = (ev) => {
+      clearTimeout(connectTimeout);
+      const wasReady = session.ready;
+      if (liveWsSessions.get(key) === session) liveWsSessions.delete(key);
+      const reason = ev && ev.reason ? ev.reason : `código ${ev ? ev.code : '?'}`;
+
+      if (wasReady) {
+        if (session.pcmChunks.length || session.transcriptBuffer.length) emitTurnToFrame();
+        sendToFrame(tabId, frameId, {
+          type: 'GEMINI_LIVE_WS_CLOSED',
+          payload: { reason, expected: session.expectedClose || (ev && ev.code === 1000) }
+        });
+      } else {
+        reject(new Error(`Gemini Live rechazó la conexión (${reason})`));
+      }
+    };
+  });
 }
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (!message || !message.type) return false;
 
+  const tabId = sender?.tab?.id;
+  const frameId = sender?.frameId || 0;
+  const key = tabId ? liveSessionKey(tabId, frameId) : '';
+
+  if (message.type === 'GEMINI_LIVE_WS_START') {
+    if (!tabId) {
+      sendResponse({ ok: false, error: 'Sin tabId' });
+      return false;
+    }
+    startLiveWsSession(tabId, frameId, message.payload)
+      .then(() => sendResponse({ ok: true }))
+      .catch((err) => sendResponse({ ok: false, error: err.message || String(err) }));
+    return true;
+  }
+
+  // Keepalive desde la pestaña: mantiene vivo el service worker e informa si la sesión sigue abierta
+  if (message.type === 'GEMINI_LIVE_WS_PING') {
+    const session = key ? liveWsSessions.get(key) : null;
+    sendResponse({
+      ok: true,
+      connected: Boolean(session && session.ready && session.ws.readyState === WebSocket.OPEN)
+    });
+    return false;
+  }
+
+  if (message.type === 'GEMINI_LIVE_WS_AUDIO_PCM') {
+    const session = key ? liveWsSessions.get(key) : null;
+    if (!session || !session.ready || session.ws.readyState !== WebSocket.OPEN) {
+      sendResponse({ ok: false, error: 'Live WS no conectado' });
+      return false;
+    }
+    try {
+      session.ws.send(
+        JSON.stringify({
+          realtimeInput: {
+            audio: { mimeType: 'audio/pcm;rate=16000', data: message.payload.base64Pcm }
+          }
+        })
+      );
+      sendResponse({ ok: true });
+    } catch (err) {
+      sendResponse({ ok: false, error: err.message || String(err) });
+    }
+    return false;
+  }
+
+  if (message.type === 'GEMINI_LIVE_WS_AUDIO_END') {
+    const session = key ? liveWsSessions.get(key) : null;
+    if (session && session.ready && session.ws.readyState === WebSocket.OPEN) {
+      try {
+        session.ws.send(JSON.stringify({ realtimeInput: { audioStreamEnd: true } }));
+      } catch (_) {}
+    }
+    sendResponse({ ok: true });
+    return false;
+  }
+
+  if (message.type === 'GEMINI_LIVE_WS_STOP') {
+    if (key) closeLiveWsSession(key);
+    sendResponse({ ok: true });
+    return false;
+  }
+
+
+  if (message.type === 'VALIDATE_GEMINI_API_KEY') {
+    validateGeminiApiKey(message.payload?.apiKey)
+      .then((res) => sendResponse({ ok: true, ...res }))
+      .catch((err) => sendResponse({ ok: false, error: err.message || String(err) }));
+    return true;
+  }
+
+  if (message.type === 'GET_GEMINI_RUNTIME_STATUS') {
+    sendResponse({
+      ok: true,
+      warning: lastGeminiRuntimeWarning || ''
+    });
+    return false;
+  }
+
   if (message.type === 'SYNTHESIZE_EDGE_TTS') {
     synthesizeEdgeTTS(message.payload)
-      .then((audioDataUrl) => sendResponse({ ok: true, audioDataUrl }))
+      .then((audioDataUrl) => sendResponse({ ok: true, audioDataUrl, engineUsed: 'edge' }))
       .catch((err) => sendResponse({ ok: false, error: err.message || String(err) }));
     return true;
   }
 
   if (message.type === 'SYNTHESIZE_GEMINI_TTS') {
     synthesizeGeminiTTS(message.payload)
-      .then((audioDataUrl) => sendResponse({ ok: true, audioDataUrl }))
+      .then((result) =>
+        sendResponse({
+          ok: true,
+          audioDataUrl: result.audioDataUrl,
+          engineUsed: result.engineUsed,
+          modelUsed: result.modelUsed || '',
+          warning: result.warning || ''
+        })
+      )
       .catch((err) => sendResponse({ ok: false, error: err.message || String(err) }));
     return true;
   }
 
   if (message.type === 'TRANSLATE_SINGLE') {
     translateSingle(message.payload.text, message.payload.targetLang)
-      .then((translated) => sendResponse({ ok: true, translated }))
+      .then((translated) =>
+        sendResponse({
+          ok: true,
+          translated,
+          warning: lastGeminiRuntimeWarning || ''
+        })
+      )
       .catch((err) => sendResponse({ ok: false, error: err.message || String(err) }));
     return true;
   }
 
   if (message.type === 'TRANSLATE_BATCH') {
     translateBatch(message.payload.texts, message.payload.targetLang)
-      .then((translated) => sendResponse({ ok: true, translated }))
+      .then((translated) =>
+        sendResponse({
+          ok: true,
+          translated,
+          warning: lastGeminiRuntimeWarning || ''
+        })
+      )
       .catch((err) => sendResponse({ ok: false, error: err.message || String(err) }));
     return true;
   }
 
   if (message.type === 'TRANSCRIBE_AND_TRANSLATE_AUDIO') {
     transcribeAndTranslateAudio(message.payload)
-      .then((translatedText) => sendResponse({ ok: true, translatedText }))
+      .then((out) =>
+        sendResponse({
+          ok: true,
+          translatedText: out.translatedText,
+          hasSpeech: out.hasSpeech,
+          warning: out.warning || ''
+        })
+      )
       .catch((err) => sendResponse({ ok: false, error: err.message || String(err) }));
     return true;
   }

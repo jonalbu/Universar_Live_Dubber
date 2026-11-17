@@ -266,6 +266,10 @@ window.YTDubberSubtitles = (function () {
         payload: { texts, targetLang: baseLang }
       });
 
+      if (response?.warning && window.YTDubberTTSEngine?.notifyRuntimeWarning) {
+        window.YTDubberTTSEngine.notifyRuntimeWarning(`⚠️ ${response.warning}`);
+      }
+
       if (response && response.ok && Array.isArray(response.translated)) {
         for (let j = 0; j < windowSegments.length; j++) {
           const seg = windowSegments[j];

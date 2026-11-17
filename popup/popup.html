@@ -54,7 +54,10 @@
       <!-- SECCIÓN EXCLUSIVA MODO GEMINI API (Oculta los TTS del navegador y usa las voces nativas de Gemini) -->
       <div id="geminiApiSection" class="mode-section hidden">
         <div class="field-group">
-          <label for="geminiApiKey">Tu Clave de Gemini API (Google AI Studio)</label>
+          <div class="label-row">
+            <label for="geminiApiKey">Tu Clave de Gemini API (Google AI Studio)</label>
+            <button id="validateGeminiKeyBtn" class="test-btn" type="button">✓ Verificar clave</button>
+          </div>
           <input
             type="password"
             id="geminiApiKey"

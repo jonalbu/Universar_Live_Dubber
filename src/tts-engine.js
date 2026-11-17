@@ -87,6 +87,18 @@ window.YTDubberTTSEngine = (function () {
     }
   }
 
+  function notifyRuntimeWarning(warningText) {
+    if (!warningText) return;
+    emitStatus(warningText, 'error');
+    if (!isSpeaking) {
+      emitSubtitle(warningText);
+      if (liveSubtitleClearTimeout) clearTimeout(liveSubtitleClearTimeout);
+      liveSubtitleClearTimeout = setTimeout(() => {
+        if (!isSpeaking) emitSubtitle('');
+      }, 4800);
+    }
+  }
+
   function clearWatchdog() {
     if (speechWatchdogTimer) {
       clearTimeout(speechWatchdogTimer);
@@ -160,8 +172,13 @@ window.YTDubberTTSEngine = (function () {
       .then((res) => {
         prefetchPromises.delete(segment.id);
         if (res && res.ok && res.audioDataUrl) {
-          prefetchedAudio.set(segment.id, res.audioDataUrl);
-          return res.audioDataUrl;
+          const item = {
+            audioDataUrl: res.audioDataUrl,
+            engineUsed: res.engineUsed || (isUsingGeminiVoice() ? 'gemini' : 'edge'),
+            warning: res.warning || ''
+          };
+          prefetchedAudio.set(segment.id, item);
+          return item;
         }
         throw new Error(res?.error || 'Fallo en síntesis de voz');
       })
@@ -219,7 +236,10 @@ window.YTDubberTTSEngine = (function () {
       }
       volumeDuckingApplied = true;
     }
-    videoEl.volume = Math.min(originalVideoVolume, settings.duckVolume);
+    // En modo de captura directa sin subtítulos, mantener mínimo 12% para que el normalizador Web Audio conserve la señal
+    const minFloor = segments.length === 0 && isUsingGeminiVoice() ? 0.12 : 0;
+    const targetDuck = Math.max(minFloor, settings.duckVolume);
+    videoEl.volume = Math.min(originalVideoVolume, targetDuck);
   }
 
   function scheduleRestoreVideoVolume(delayMs = 350) {
@@ -303,12 +323,16 @@ window.YTDubberTTSEngine = (function () {
     }
 
     if (pendingLiveQueue.length > 0) {
-      if (pendingLiveQueue.length > 2) {
-        const combinedText = pendingLiveQueue.map((item) => item.text).join(' ');
-        pendingLiveQueue = [];
-        playLiveItem({ text: combinedText, durationHint: 4.5 });
+      const nextItem = pendingLiveQueue.shift();
+      if (nextItem.audioDataUrl) {
+        playPreSynthesizedLiveAudio(nextItem.audioDataUrl, nextItem.text);
+      } else if (pendingLiveQueue.length > 1 && !pendingLiveQueue[0].audioDataUrl) {
+        const extra = pendingLiveQueue.shift();
+        playLiveItem({
+          text: `${nextItem.text} ${extra.text}`.trim(),
+          durationHint: 4.5
+        });
       } else {
-        const nextItem = pendingLiveQueue.shift();
         playLiveItem(nextItem);
       }
       return;
@@ -407,18 +431,21 @@ window.YTDubberTTSEngine = (function () {
     }
 
     try {
-      const audioDataUrl = await prefetchSegment(segment);
+      const prefetched = await prefetchSegment(segment);
       if (!isActive || !videoEl || videoEl.paused) {
         isSynthesizing = false;
         return;
       }
+
+      const audioDataUrl = typeof prefetched === 'string' ? prefetched : prefetched?.audioDataUrl;
+      const engineUsed = typeof prefetched === 'object' ? prefetched?.engineUsed : '';
 
       const audio = new Audio(audioDataUrl);
       currentAudio = audio;
       audio.volume = Math.max(0, Math.min(1, settings.dubVolume));
 
       // En Gemini TTS aplicamos el multiplicador baseSpeed directamente al elemento <audio>
-      const baseRate = isUsingGeminiVoice() ? Number(settings.baseSpeed) || 1.0 : 1.0;
+      const baseRate = engineUsed === 'gemini' ? Number(settings.baseSpeed) || 1.0 : 1.0;
       const lag = videoEl.currentTime - segment.start;
       audio.playbackRate = lag > 0.8 ? Math.min(1.25, baseRate * 1.1) : baseRate;
 
@@ -431,9 +458,13 @@ window.YTDubberTTSEngine = (function () {
         isSpeaking = true;
         applyAudioDucking();
         emitSubtitle(segment.text);
-        const label = isUsingGeminiVoice()
-          ? `Voz Gemini (${settings.geminiVoice || 'Kore'})`
-          : 'Edge Neural';
+        let label = 'Edge Neural';
+        if (isUsingGeminiVoice()) {
+          label =
+            engineUsed === 'edge-fallback'
+              ? 'Respaldo Edge (Cuota Gemini 429)'
+              : `Voz Gemini (${settings.geminiVoice || 'Kore'})`;
+        }
         emitStatus(`Doblaje activo (${label})`, 'speaking');
       };
 
@@ -447,8 +478,11 @@ window.YTDubberTTSEngine = (function () {
       };
 
       await audio.play();
-    } catch (_) {
+    } catch (err) {
       isSynthesizing = false;
+      if (err && /Clave de Gemini API|Permiso denegado|401|403/i.test(err.message || '')) {
+        notifyRuntimeWarning(`⚠️ ${err.message}`);
+      }
       if (isActive && videoEl && !videoEl.paused) {
         speakWithNativeBrowserTTS(segment);
       }
@@ -500,7 +534,8 @@ window.YTDubberTTSEngine = (function () {
       currentAudio = audio;
       audio.volume = Math.max(0, Math.min(1, settings.dubVolume));
 
-      const baseRate = isUsingGeminiVoice() ? Number(settings.baseSpeed) || 1.0 : 1.0;
+      const isGemEngine = res.engineUsed === 'gemini';
+      const baseRate = isGemEngine ? Number(settings.baseSpeed) || 1.0 : 1.0;
       audio.playbackRate = pendingLiveQueue.length > 0 ? Math.min(1.25, baseRate * 1.08) : baseRate;
 
       armWatchdog(15000, () => {
@@ -512,9 +547,13 @@ window.YTDubberTTSEngine = (function () {
         isSpeaking = true;
         applyAudioDucking();
         emitSubtitle(text);
-        const label = isUsingGeminiVoice()
-          ? `Voz Gemini (${settings.geminiVoice || 'Kore'})`
-          : 'Edge Neural';
+        let label = 'Edge Neural';
+        if (isUsingGeminiVoice()) {
+          label =
+            res.engineUsed === 'edge-fallback'
+              ? 'Respaldo Edge (Cuota Gemini 429)'
+              : `Voz Gemini (${settings.geminiVoice || 'Kore'})`;
+        }
         emitStatus(`Doblaje en Vivo (${label})`, 'speaking');
       };
 
@@ -528,8 +567,11 @@ window.YTDubberTTSEngine = (function () {
       };
 
       await audio.play();
-    } catch (_) {
+    } catch (err) {
       isSynthesizing = false;
+      if (err && /Clave de Gemini API|Permiso denegado|401|403/i.test(err.message || '')) {
+        notifyRuntimeWarning(`⚠️ ${err.message}`);
+      }
       if (isActive) {
         speakWithNativeBrowserTTS(pseudoSegment);
       }
@@ -547,6 +589,52 @@ window.YTDubberTTSEngine = (function () {
     }
 
     playLiveItem({ text, durationHint });
+  }
+
+  async function playPreSynthesizedLiveAudio(audioDataUrl, transcript = '') {
+    if (!isActive || !audioDataUrl || (videoEl && videoEl.paused)) return;
+
+    if (transcript) {
+      emitSubtitle(transcript);
+    }
+
+    if (isSpeaking || isSynthesizing) {
+      pendingLiveQueue.push({ audioDataUrl, text: transcript, durationHint: 3.2 });
+      return;
+    }
+
+    isSynthesizing = true;
+    try {
+      const audio = new Audio(audioDataUrl);
+      currentAudio = audio;
+      audio.volume = Math.max(0, Math.min(1, settings.dubVolume));
+      const baseRate = Number(settings.baseSpeed) || 1.0;
+      audio.playbackRate = pendingLiveQueue.length > 0 ? Math.min(1.25, baseRate * 1.08) : baseRate;
+
+      armWatchdog(15000, () => {
+        onFinishSpeakingItem();
+      });
+
+      audio.onplay = () => {
+        isSynthesizing = false;
+        isSpeaking = true;
+        applyAudioDucking();
+        if (transcript) emitSubtitle(transcript);
+        emitStatus(`Gemini Live Stream (${settings.geminiVoice || 'Kore'})`, 'speaking');
+      };
+
+      audio.onended = () => {
+        onFinishSpeakingItem();
+      };
+
+      audio.onerror = () => {
+        onFinishSpeakingItem();
+      };
+
+      await audio.play();
+    } catch (_) {
+      onFinishSpeakingItem();
+    }
   }
 
   function onVideoTimeUpdate() {
@@ -663,6 +751,8 @@ window.YTDubberTTSEngine = (function () {
     setActive,
     getIsActive,
     stopCurrentSpeech,
-    speakLiveText
+    speakLiveText,
+    playPreSynthesizedLiveAudio,
+    notifyRuntimeWarning
   };
 })();

@@ -8,7 +8,10 @@ Extensión de navegador (**Manifest V3**) para traducir y doblar al instante cua
 
 - **Dos modos de operación configurables:**
   1. **Motor TTS (Sin API):** Traducción gratuita con síntesis de voz mediante **Microsoft Edge Neural TTS** (voces naturales por idioma) o la **Web Speech API** nativa del navegador.
-  2. **Clave Gemini API (Google AI Studio):** Traducción y transcripción de audio en tiempo real con IA, además de voces nativas de Gemini TTS (`Kore`, `Puck`, `Aoede`, `Charon`, `Fenrir`, `Zephyr`, `Leda`, `Orus`).
+  2. **Clave Gemini API (Google AI Studio):**
+     - **Modelos de última generación:** Usa `gemini-3.8-flash` / `gemini-3.5-flash-lite` para traducción estructurada JSON, `gemini-3.8-flash-lite-tts` / `gemini-3.8-flash-tts` para síntesis de voz nativa (`Kore`, `Puck`, `Aoede`, `Charon`, `Fenrir`, `Zephyr`, `Leda`, `Orus`) y `gemini-3.8-live` por WebSocket (`BidiGenerateContent`) para interpretación en tiempo real.
+     - **Verificación de API Key integrada:** Botón **✓ Verificar clave** y prueba estricta de voz en el popup para detectar de inmediato errores `401/403` (clave inválida o con restricciones de HTTP Referrer) o `429` (cuota por minuto).
+     - **Captura de audio en vivo con Normalizador Web Audio + VAD:** Compensa automáticamente el *Audio Ducking* del video para que Gemini escuche siempre al 100% de volumen y filtra silencios mediante detección de actividad de voz (VAD en cliente) para no gastar cuota de la API cuando nadie habla.
 - **Soporte universal de video:**
   - En **YouTube**: intercepta pistas de subtítulos y activa la carga automática si es necesario.
   - En **cualquier sitio web**: detecta elementos `<video>` HTML5, pistas `TextTrack` (VTT/SRT), subtítulos renderizados en el DOM y, en modo Gemini API, captura el flujo de audio directamente (`captureStream` / `MediaRecorder`) cuando no existen subtítulos.

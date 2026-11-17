@@ -70,6 +70,7 @@ const modeGeminiBtn = document.getElementById('modeGeminiBtn');
 const geminiApiSectionEl = document.getElementById('geminiApiSection');
 const browserTtsSectionEl = document.getElementById('browserTtsSection');
 const geminiApiKeyEl = document.getElementById('geminiApiKey');
+const validateGeminiKeyBtn = document.getElementById('validateGeminiKeyBtn');
 const geminiVoiceSelectEl = document.getElementById('geminiVoiceSelect');
 const testGeminiVoiceBtn = document.getElementById('testGeminiVoiceBtn');
 
@@ -265,6 +266,14 @@ showSubtitlesOverlayEl.addEventListener('change', saveSettings);
 toggleDubbingBtn.addEventListener('click', () => {
   if (!activeWebTabId) return;
   const nextState = !isTabDubbingActive;
+  const activeMode = modeGeminiBtn.classList.contains('active') ? 'gemini-api' : 'tts-only';
+  if (nextState && activeMode === 'gemini-api' && !(geminiApiKeyEl.value || '').trim()) {
+    testStatusText.textContent =
+      '⚠️ Ingresa tu Clave de Gemini API o cambia al modo Motor TTS (Sin API)';
+    geminiApiKeyEl.focus();
+    return;
+  }
+
   chrome.tabs.sendMessage(
     activeWebTabId,
     { type: 'TOGGLE_DUBBING_FROM_POPUP', payload: { forceState: nextState } },
@@ -275,6 +284,38 @@ toggleDubbingBtn.addEventListener('click', () => {
     }
   );
 });
+
+if (validateGeminiKeyBtn) {
+  validateGeminiKeyBtn.addEventListener('click', async () => {
+    const apiKey = (geminiApiKeyEl.value || '').trim();
+    if (!apiKey) {
+      testStatusText.textContent = '⚠️ Primero pega tu Clave de Gemini API (AIza...)';
+      geminiApiKeyEl.focus();
+      return;
+    }
+
+    testStatusText.textContent = '⏳ Verificando Clave de Gemini API con Google AI Studio...';
+    validateGeminiKeyBtn.disabled = true;
+
+    try {
+      const res = await chrome.runtime.sendMessage({
+        type: 'VALIDATE_GEMINI_API_KEY',
+        payload: { apiKey }
+      });
+      validateGeminiKeyBtn.disabled = false;
+
+      if (!res || !res.ok) {
+        throw new Error(res?.error || 'Clave no válida');
+      }
+
+      saveSettings();
+      testStatusText.textContent = '✓ Clave de Gemini API válida y con permisos activos';
+    } catch (err) {
+      validateGeminiKeyBtn.disabled = false;
+      testStatusText.textContent = `⚠️ ${err.message}`;
+    }
+  });
+}
 
 // Botón de prueba para las voces nativas de IA de Gemini (Kore, Puck, Aoede, Charon, Fenrir...)
 testGeminiVoiceBtn.addEventListener('click', async () => {
@@ -295,7 +336,7 @@ testGeminiVoiceBtn.addEventListener('click', async () => {
   try {
     const res = await chrome.runtime.sendMessage({
       type: 'SYNTHESIZE_GEMINI_TTS',
-      payload: { text: phrase, geminiVoice, apiKey }
+      payload: { text: phrase, geminiVoice, apiKey, strictGeminiOnly: true }
     });
     testGeminiVoiceBtn.disabled = false;
 
@@ -306,9 +347,10 @@ testGeminiVoiceBtn.addEventListener('click', async () => {
     const audio = new Audio(res.audioDataUrl);
     audio.volume = Number(dubVolumeEl.value || 100) / 100;
     audio.playbackRate = Number(baseSpeedEl.value || 1.0);
-    testStatusText.textContent = `🔊 Reproduciendo voz Gemini: ${geminiVoice}`;
+    const modelBadge = res.modelUsed ? ` [${res.modelUsed}]` : '';
+    testStatusText.textContent = `🔊 Reproduciendo voz Gemini: ${geminiVoice}${modelBadge}`;
     audio.onended = () => {
-      testStatusText.textContent = `✓ Voz Gemini (${geminiVoice}) lista`;
+      testStatusText.textContent = `✓ Voz Gemini (${geminiVoice}) verificada con éxito`;
     };
     await audio.play();
   } catch (err) {
@@ -396,6 +438,14 @@ chrome.storage.local.get(['ytDubberSettings'], (res) => {
 
   geminiApiKeyEl.value = currentSettings.geminiApiKey || '';
   showSubtitlesOverlayEl.checked = currentSettings.showSubtitlesOverlay !== false;
+
+  if (currentSettings.workMode === 'gemini-api') {
+    chrome.runtime.sendMessage({ type: 'GET_GEMINI_RUNTIME_STATUS' }, (statusRes) => {
+      if (!chrome.runtime.lastError && statusRes?.warning) {
+        testStatusText.textContent = `⚠️ ${statusRes.warning}`;
+      }
+    });
+  }
 
   checkActiveTabState();
 });

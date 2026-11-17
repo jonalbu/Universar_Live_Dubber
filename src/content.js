@@ -38,9 +38,16 @@
         subtitleOverlay.style.display = 'none';
       }
 
-      if (newSettings.targetLang && newSettings.targetLang !== prevSettings.targetLang) {
+      const langChanged =
+        newSettings.targetLang && newSettings.targetLang !== prevSettings.targetLang;
+      const modeOrKeyChanged =
+        (newSettings.workMode && newSettings.workMode !== prevSettings.workMode) ||
+        (newSettings.geminiApiKey !== undefined &&
+          newSettings.geminiApiKey !== prevSettings.geminiApiKey);
+
+      if (langChanged || modeOrKeyChanged) {
         loadedSegments = [];
-        window.YTDubberLiveCapturer.setTargetLang(newSettings.targetLang);
+        window.YTDubberLiveCapturer.setTargetLang(newSettings.targetLang || prevSettings.targetLang);
         if (window.YTDubberTTSEngine.getIsActive()) {
           startDubbingForCurrentVideo();
         }
@@ -51,8 +58,11 @@
   chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     if (!msg || !msg.type) return false;
 
+    // El popup envía a todos los frames de la pestaña (Vimeo pone el video en un iframe).
+    // Solo responde el frame que tiene un video; los demás callan para no tapar su respuesta.
     if (msg.type === 'GET_TAB_DUBBER_STATE') {
       const video = findBestVideoElement();
+      if (!video && !window.YTDubberTTSEngine.getIsActive()) return false;
       sendResponse({
         ok: true,
         isActive: window.YTDubberTTSEngine.getIsActive(),
@@ -69,10 +79,15 @@
     }
 
     if (msg.type === 'TOGGLE_DUBBING_FROM_POPUP') {
+      const video = findBestVideoElement();
+      if (!video && !window.YTDubberTTSEngine.getIsActive()) return false;
       toggleDubbing(msg.payload?.forceState);
       sendResponse({
         ok: true,
-        isActive: window.YTDubberTTSEngine.getIsActive()
+        isActive:
+          typeof msg.payload?.forceState === 'boolean'
+            ? msg.payload.forceState
+            : window.YTDubberTTSEngine.getIsActive()
       });
       return false;
     }
