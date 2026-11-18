@@ -176,13 +176,23 @@
             if (typeof player.loadModule === 'function') {
               player.loadModule('captions');
             }
+            const ccBtn = document.querySelector('.ytp-subtitles-button');
+            const wasPressed = ccBtn?.getAttribute('aria-pressed') === 'true';
             if (typeof player.toggleSubtitlesOn === 'function') {
               player.toggleSubtitlesOn();
             }
-            // Si el botón CC de YouTube está apagado, activarlo para que YouTube emita /api/timedtext con token POT
-            const ccBtn = document.querySelector('.ytp-subtitles-button');
-            if (ccBtn && ccBtn.getAttribute('aria-pressed') === 'false') {
-              ccBtn.click();
+            // Si el botón CC estaba apagado, activarlo; si ya estaba encendido sin timedtext interceptado, reiniciarlo para forzar /api/timedtext con token POT
+            if (ccBtn) {
+              if (!wasPressed && ccBtn.getAttribute('aria-pressed') === 'false') {
+                ccBtn.click();
+              } else if (wasPressed && !lastTimedTextUrl) {
+                ccBtn.click();
+                setTimeout(() => {
+                  if (ccBtn.getAttribute('aria-pressed') === 'false') {
+                    ccBtn.click();
+                  }
+                }, 150);
+              }
             }
           }
         } catch (_) {}
